@@ -115,6 +115,8 @@
 #define __NR_VMEMMAP_TAILS (MAX_FOLIO_ORDER - VMEMMAP_TAIL_MIN_ORDER + 1)
 #define NR_VMEMMAP_TAILS (__NR_VMEMMAP_TAILS > 0 ? __NR_VMEMMAP_TAILS : 0)
 
+#define MAX_KSWAPD_THREADS 16
+
 enum migratetype {
 	MIGRATE_UNMOVABLE,
 	MIGRATE_MOVABLE,
@@ -1523,7 +1525,8 @@ typedef struct pglist_data {
 #ifdef CONFIG_MEMORY_HOTPLUG
 	struct mutex kswapd_lock;
 #endif
-	struct task_struct *kswapd;	/* Protected by kswapd_lock */
+	/* Protected by kswapd_lock */
+	struct task_struct *kswapd[MAX_KSWAPD_THREADS];
 	int kswapd_order;
 	enum zone_type kswapd_highest_zoneidx;
 

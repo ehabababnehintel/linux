@@ -270,6 +270,7 @@ int user_min_free_kbytes = -1;
 static int watermark_boost_factor __read_mostly = 15000;
 static int watermark_scale_factor = 10;
 int defrag_mode;
+static int max_kswapd_threads = MAX_KSWAPD_THREADS;
 
 /* movable_zone is the "real" zone pages in ZONE_MOVABLE are taken from */
 int movable_zone;
@@ -6536,6 +6537,21 @@ static int min_free_kbytes_sysctl_handler(const struct ctl_table *table, int wri
 	return 0;
 }
 
+static int kswapd_threads_sysctl_handler(const struct ctl_table *table, int write,
+	void __user *buffer, size_t *length, loff_t *ppos)
+{
+	int rc;
+
+	rc = proc_dointvec_minmax(table, write, buffer, length, ppos);
+	if (rc)
+		return rc;
+
+	if (write)
+		update_kswapd_threads();
+
+	return 0;
+}
+
 static int watermark_scale_factor_sysctl_handler(const struct ctl_table *table, int write,
 		void *buffer, size_t *length, loff_t *ppos)
 {
@@ -6695,6 +6711,15 @@ static const struct ctl_table page_alloc_sysctl_table[] = {
 		.mode		= 0644,
 		.proc_handler	= proc_dointvec_minmax,
 		.extra1		= SYSCTL_ZERO,
+	},
+	{
+		.procname       = "kswapd_threads",
+		.data           = &kswapd_threads,
+		.maxlen         = sizeof(kswapd_threads),
+		.mode           = 0644,
+		.proc_handler   = kswapd_threads_sysctl_handler,
+		.extra1         = SYSCTL_ONE,
+		.extra2         = &max_kswapd_threads,
 	},
 	{
 		.procname	= "watermark_scale_factor",
