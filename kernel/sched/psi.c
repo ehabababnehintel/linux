@@ -178,6 +178,10 @@ struct psi_group psi_system = {
 
 static DEFINE_PER_CPU(seqcount_t, psi_seq) = SEQCNT_ZERO(psi_seq);
 
+#ifdef CONFIG_NUMA
+struct psi_group psi_numa[MAX_NUMNODES];
+#endif
+
 static inline void psi_write_begin(int cpu)
 {
 	write_seqcount_begin(per_cpu_ptr(&psi_seq, cpu));
@@ -227,6 +231,8 @@ static void group_init(struct psi_group *group)
 
 void __init psi_init(void)
 {
+	int node;
+
 	if (!psi_enable) {
 		static_branch_enable(&psi_disabled);
 		static_branch_disable(&psi_cgroups_enabled);
@@ -238,6 +244,21 @@ void __init psi_init(void)
 
 	psi_period = jiffies_to_nsecs(PSI_FREQ);
 	group_init(&psi_system);
+
+#ifdef CONFIG_NUMA
+	for_each_online_node(node) {
+		struct psi_group *group = &psi_numa[node];
+
+		group->pcpu = alloc_percpu(struct psi_group_cpu);
+		if (!group->pcpu) {
+			pr_warn("psi: failed to allocate per-cpu state for NUMA node %d\n",
+				node);
+			continue;
+		}
+
+		group_init(group);
+	}
+#endif
 }
 
 static u32 test_states(unsigned int *tasks, u32 state_mask)
@@ -909,6 +930,7 @@ static void psi_flags_change(struct task_struct *task, int clear, int set)
 void psi_task_change(struct task_struct *task, int clear, int set)
 {
 	int cpu = task_cpu(task);
+	int node;
 	u64 now;
 
 	if (!task->pid)
@@ -920,6 +942,12 @@ void psi_task_change(struct task_struct *task, int clear, int set)
 	now = cpu_clock(cpu);
 	for_each_group(group, task_psi_group(task))
 		psi_group_change(group, cpu, clear, set, now, true);
+#ifdef CONFIG_NUMA
+	node = cpu_to_node(cpu);
+	if (node_online(node) && psi_numa[node].pcpu) {
+		psi_group_change(&psi_numa[node], cpu, clear, set, now, true);
+	}
+#endif
 	psi_write_end(cpu);
 }
 
@@ -928,10 +956,17 @@ void psi_task_switch(struct task_struct *prev, struct task_struct *next,
 {
 	struct psi_group *common = NULL;
 	int cpu = task_cpu(prev);
+	int node;
+	struct psi_group *numa_group = NULL;
 	u64 now;
 
 	psi_write_begin(cpu);
 	now = cpu_clock(cpu);
+	node = cpu_to_node(cpu);
+#ifdef CONFIG_NUMA
+	if (node_online(node) && psi_numa[node].pcpu)
+		numa_group = &psi_numa[node];
+#endif
 
 	if (next->pid) {
 		psi_flags_change(next, 0, TSK_ONCPU);
@@ -949,11 +984,15 @@ void psi_task_switch(struct task_struct *prev, struct task_struct *next,
 			}
 			psi_group_change(group, cpu, 0, TSK_ONCPU, now, true);
 		}
+
+		if (numa_group)
+			psi_group_change(numa_group, cpu, 0, TSK_ONCPU, now, true);
 	}
 
 	if (prev->pid) {
 		int clear = TSK_ONCPU, set = 0;
 		bool wake_clock = true;
+		int numa_clear, numa_set;
 
 		/*
 		 * When we're going to sleep, psi_dequeue() lets us
@@ -979,6 +1018,9 @@ void psi_task_switch(struct task_struct *prev, struct task_struct *next,
 				wake_clock = false;
 		}
 
+		numa_clear = clear;
+		numa_set = set;
+
 		psi_flags_change(prev, clear, set);
 
 		for_each_group(group, task_psi_group(prev)) {
@@ -997,6 +1039,17 @@ void psi_task_switch(struct task_struct *prev, struct task_struct *next,
 			clear &= ~TSK_ONCPU;
 			for_each_group(group, common)
 				psi_group_change(group, cpu, clear, set, now, wake_clock);
+		}
+
+		if (numa_group) {
+			if (!next->pid) {
+				psi_group_change(numa_group, cpu, numa_clear, numa_set,
+						 now, wake_clock);
+			} else if ((prev->psi_flags ^ next->psi_flags) & ~TSK_ONCPU) {
+				numa_clear &= ~TSK_ONCPU;
+				psi_group_change(numa_group, cpu, numa_clear, numa_set,
+						 now, wake_clock);
+			}
 		}
 	}
 	psi_write_end(cpu);
@@ -1291,6 +1344,49 @@ int psi_show(struct seq_file *m, struct psi_group *group, enum psi_res res)
 
 	return 0;
 }
+
+#ifdef CONFIG_NUMA
+ssize_t psi_sysfs_show(struct psi_group *group, enum psi_res res, char *buf)
+{
+	u64 now;
+	int w = 0;
+	int some = (res == PSI_CPU) ? PSI_CPU_SOME :
+		   (res == PSI_MEM) ? PSI_MEM_SOME : PSI_IO_SOME;
+	int full = (res == PSI_CPU) ? PSI_CPU_FULL :
+		   (res == PSI_MEM) ? PSI_MEM_FULL : PSI_IO_FULL;
+
+	if (static_branch_likely(&psi_disabled))
+		return -EOPNOTSUPP;
+
+	if (!group || !group->pcpu)
+		return -EOPNOTSUPP;
+
+	mutex_lock(&group->avgs_lock);
+	now = sched_clock();
+	collect_percpu_times(group, PSI_AVGS, NULL);
+
+	if (now >= group->avg_next_update)
+		group->avg_next_update = update_averages(group, now);
+	mutex_unlock(&group->avgs_lock);
+
+	w += sysfs_emit_at(buf, w,
+		"some avg10=%lu.%02lu avg60=%lu.%02lu avg300=%lu.%02lu total=%llu\n",
+		LOAD_INT(group->avg[some][0]), LOAD_FRAC(group->avg[some][0]),
+		LOAD_INT(group->avg[some][1]), LOAD_FRAC(group->avg[some][1]),
+		LOAD_INT(group->avg[some][2]), LOAD_FRAC(group->avg[some][2]),
+		group->total[PSI_AVGS][some]);
+
+	w += sysfs_emit_at(buf, w,
+		"full avg10=%lu.%02lu avg60=%lu.%02lu avg300=%lu.%02lu total=%llu\n",
+		LOAD_INT(group->avg[full][0]), LOAD_FRAC(group->avg[full][0]),
+		LOAD_INT(group->avg[full][1]), LOAD_FRAC(group->avg[full][1]),
+		LOAD_INT(group->avg[full][2]), LOAD_FRAC(group->avg[full][2]),
+		group->total[PSI_AVGS][full]);
+
+	return w;
+}
+EXPORT_SYMBOL_GPL(psi_sysfs_show);
+#endif
 
 struct psi_trigger *psi_trigger_create(struct psi_group *group, char *buf,
 				       enum psi_res res, struct file *file,
