@@ -22,6 +22,8 @@
 #include <linux/swap.h>
 #include <linux/slab.h>
 #include <linux/memblock.h>
+#include <linux/psi.h>
+#include "../../kernel/sched/sched.h"
 
 static const struct bus_type node_subsys = {
 	.name = "node",
@@ -646,11 +648,29 @@ static ssize_t node_read_distance(struct device *dev,
 }
 static DEVICE_ATTR(distance, 0444, node_read_distance, NULL);
 
+static ssize_t cpu_pressure_show(struct device *dev,
+                                 struct device_attribute *attr,
+                                 char *buf)
+{
+	int node = dev->id;
+
+	if (!node_online(node))
+		return -ENODEV;
+
+	if (!psi_numa[node].pcpu)
+		return -EOPNOTSUPP;
+
+	return psi_sysfs_show(&psi_numa[node], PSI_CPU, buf);
+}
+static DEVICE_ATTR_RO(cpu_pressure);
+
+
 static struct attribute *node_dev_attrs[] = {
 	&dev_attr_meminfo.attr,
 	&dev_attr_numastat.attr,
 	&dev_attr_distance.attr,
 	&dev_attr_vmstat.attr,
+	&dev_attr_cpu_pressure.attr,
 	NULL
 };
 
