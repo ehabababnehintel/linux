@@ -16,6 +16,10 @@ struct css_set;
 
 extern struct static_key_false psi_disabled;
 extern struct psi_group psi_system;
+#ifdef CONFIG_NUMA
+extern struct psi_group psi_numa[MAX_NUMNODES];
+ssize_t psi_sysfs_show(struct psi_group *group, enum psi_res res, char *buf);
+#endif
 
 void psi_init(void);
 
