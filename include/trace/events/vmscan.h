@@ -56,21 +56,46 @@ TRACE_DEFINE_ENUM(KSWAPD_CLEAR_HOPELESS_PCP);
 	(RECLAIM_WB_ASYNC) \
 	)
 
-TRACE_EVENT(mm_vmscan_kswapd_sleep,
+TRACE_EVENT(mm_vmscan_kswapd_thread_sleep,
 
-	TP_PROTO(int nid),
+	TP_PROTO(int nid, int pid, int nr_threads),
 
-	TP_ARGS(nid),
+	TP_ARGS(nid, pid, nr_threads),
 
 	TP_STRUCT__entry(
-		__field(	int,	nid	)
+		__field(int,	nid)
+		__field(int,	pid)
+		__field(int,	nr_threads)
 	),
 
 	TP_fast_assign(
 		__entry->nid	= nid;
+		__entry->pid	= pid;
+		__entry->nr_threads = nr_threads;
 	),
 
-	TP_printk("nid=%d", __entry->nid)
+	TP_printk("nid=%d pid=%d nr_threads=%d", __entry->nid, __entry->pid, __entry->nr_threads)
+);
+
+TRACE_EVENT(mm_vmscan_kswapd_thread_wake,
+
+	TP_PROTO(int nid, int pid, int nr_threads),
+
+	TP_ARGS(nid, pid, nr_threads),
+
+	TP_STRUCT__entry(
+		__field(int,	nid)
+		__field(int,	pid)
+		__field(int,	nr_threads)
+	),
+
+	TP_fast_assign(
+		__entry->nid	= nid;
+		__entry->pid	= pid;
+		__entry->nr_threads = nr_threads;
+	),
+
+	TP_printk("nid=%d pid=%d nr_threads=%d", __entry->nid, __entry->pid, __entry->nr_threads)
 );
 
 TRACE_EVENT(mm_vmscan_kswapd_wake,
@@ -94,6 +119,30 @@ TRACE_EVENT(mm_vmscan_kswapd_wake,
 	TP_printk("nid=%d order=%d",
 		__entry->nid,
 		__entry->order)
+);
+
+TRACE_EVENT(mm_vmscan_kswapd_wake_threads,
+
+	TP_PROTO(int nid, int nr_threads, int cur_running),
+
+	TP_ARGS(nid, nr_threads, cur_running),
+
+	TP_STRUCT__entry(
+		__field(int,	nid)
+		__field(int,	nr_threads)
+		__field(int,	cur_running)
+	),
+
+	TP_fast_assign(
+		__entry->nid	= nid;
+		__entry->nr_threads	= nr_threads;
+		__entry->cur_running	= cur_running;
+	),
+
+	TP_printk("nid=%d nr_threads=%d cur_running=%d",
+		__entry->nid,
+		__entry->nr_threads,
+		__entry->cur_running)
 );
 
 TRACE_EVENT(mm_vmscan_wakeup_kswapd,

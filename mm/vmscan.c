@@ -188,6 +188,72 @@ struct scan_control {
 int kswapd_threads = DEF_KSWAPD_THREADS_PER_NODE;
 int kswapd_threads_current = DEF_KSWAPD_THREADS_PER_NODE;
 
+static inline int kswapd_psi_threads_to_wake(struct pglist_data *pgdat)
+{
+	int nr_threads = max_t(int, READ_ONCE(kswapd_threads_current), 1);
+
+#if defined(CONFIG_NUMA) && defined(CONFIG_PSI)
+	int nid = pgdat->node_id;
+
+	if (node_online(nid) && psi_numa[nid].pcpu &&
+	    psi_group_cpu_under_pressure(&psi_numa[nid]))
+		return 1;
+#endif
+
+	return nr_threads;
+}
+
+/*
+ * Determine the number of kswapd threads to wake based on CPUs that are
+ * online on this node and, when possible, currently idle. Only counts
+ * physical cores (not SMT siblings).
+ */
+static inline int kswapd_cpumask_threads_to_wake(struct pglist_data *pgdat)
+{
+	int nr_threads = max_t(int, READ_ONCE(kswapd_threads_current), 1);
+	const struct cpumask *node_cpus;
+	int cpu;
+	int idle_cores = 0;
+	int nid = pgdat->node_id;
+
+	if (!node_online(nid))
+		return nr_threads;
+
+	node_cpus = cpumask_of_node(nid);
+
+	/* Count idle physical cores only (skip SMT siblings) */
+	for_each_cpu_and(cpu, node_cpus, cpu_online_mask) {
+		/* Only count the first CPU in each SMT sibling group */
+		if (cpumask_first(topology_sibling_cpumask(cpu)) == cpu) {
+			if (idle_cpu(cpu)) {
+				idle_cores++;
+				/* We do not need to count more than kswapd_threads_current */
+				if (idle_cores >= nr_threads)
+					break;
+			}
+		}
+	}
+
+	if (idle_cores)
+		return min(nr_threads, idle_cores);
+
+	return nr_threads;
+}
+
+/*
+ * Select kswapd wakeup strategy based on configuration.
+ * CONFIG_KSWAPD_PSI_AWARE: use PSI-based pressure awareness
+ * default: use CPU mask-based availability
+ */
+static inline int kswapd_threads_to_wake(struct pglist_data *pgdat)
+{
+#ifdef CONFIG_KSWAPD_PSI_AWARE
+	return kswapd_psi_threads_to_wake(pgdat);
+#else
+	return kswapd_cpumask_threads_to_wake(pgdat);
+#endif
+}
+
 #ifdef ARCH_HAS_PREFETCHW
 #define prefetchw_prev_lru_folio(_folio, _base, _field)			\
 	do {								\
@@ -6599,6 +6665,22 @@ retry:
 	return 0;
 }
 
+static void wakeup_kswapd_threads(pg_data_t *pgdat)
+{
+	int nr_threads;
+	int nr_running_kswapd_threads;
+
+	nr_threads = kswapd_threads_to_wake(pgdat);
+	nr_running_kswapd_threads = atomic_read(&pgdat->kswapd_running_threads);
+
+	trace_mm_vmscan_kswapd_wake_threads(pgdat->node_id, nr_threads, nr_running_kswapd_threads);
+
+	if (nr_running_kswapd_threads > 0)
+		return;
+
+	wake_up_interruptible_nr(&pgdat->kswapd_wait, nr_threads);
+}
+
 static bool allow_direct_reclaim(pg_data_t *pgdat)
 {
 	struct zone *zone;
@@ -6629,7 +6711,13 @@ static bool allow_direct_reclaim(pg_data_t *pgdat)
 		if (READ_ONCE(pgdat->kswapd_highest_zoneidx) > ZONE_NORMAL)
 			WRITE_ONCE(pgdat->kswapd_highest_zoneidx, ZONE_NORMAL);
 
-		wake_up_interruptible(&pgdat->kswapd_wait);
+		/*
+		 * If kswapd is asleep, wake it up to start reclaiming
+		 * pages. If kswapd is already awake, it will pick up the
+		 * change in highest_zoneidx and start reclaiming from
+		 * the appropriate zones.
+		 */
+		wakeup_kswapd_threads(pgdat);
 	}
 
 	return wmark_ok;
@@ -7354,7 +7442,8 @@ static void kswapd_try_to_sleep(pg_data_t *pgdat, int alloc_order, int reclaim_o
 	if (freezing(current) || kthread_should_stop())
 		return;
 
-	prepare_to_wait(&pgdat->kswapd_wait, &wait, TASK_INTERRUPTIBLE);
+	prepare_to_wait_exclusive(&pgdat->kswapd_wait, &wait,
+				  TASK_INTERRUPTIBLE);
 
 	/*
 	 * Try to sleep for a short interval. Note that kcompactd will only be
@@ -7395,7 +7484,8 @@ static void kswapd_try_to_sleep(pg_data_t *pgdat, int alloc_order, int reclaim_o
 		}
 
 		finish_wait(&pgdat->kswapd_wait, &wait);
-		prepare_to_wait(&pgdat->kswapd_wait, &wait, TASK_INTERRUPTIBLE);
+		prepare_to_wait_exclusive(&pgdat->kswapd_wait, &wait,
+					  TASK_INTERRUPTIBLE);
 	}
 
 	/*
@@ -7404,7 +7494,6 @@ static void kswapd_try_to_sleep(pg_data_t *pgdat, int alloc_order, int reclaim_o
 	 */
 	if (!remaining &&
 	    prepare_kswapd_sleep(pgdat, reclaim_order, highest_zoneidx)) {
-		trace_mm_vmscan_kswapd_sleep(pgdat->node_id);
 
 		/*
 		 * vmstat counters are not perfectly accurate and the estimated
@@ -7416,8 +7505,19 @@ static void kswapd_try_to_sleep(pg_data_t *pgdat, int alloc_order, int reclaim_o
 		 */
 		set_pgdat_percpu_threshold(pgdat, calculate_normal_threshold);
 
-		if (!kthread_should_stop())
+		if (!kthread_should_stop()) {
+			int nr_kswapd_running_threads;
+			/* Decrement counter before going to sleep */
+			nr_kswapd_running_threads =
+				atomic_dec_return(&pgdat->kswapd_running_threads);
+			trace_mm_vmscan_kswapd_thread_sleep(pgdat->node_id, current->pid,
+				nr_kswapd_running_threads);
 			schedule();
+			/* Increment counter after waking up */
+			nr_kswapd_running_threads = atomic_inc_return(&pgdat->kswapd_running_threads);
+			trace_mm_vmscan_kswapd_thread_wake(pgdat->node_id, current->pid,
+				nr_kswapd_running_threads);
+		}
 
 		set_pgdat_percpu_threshold(pgdat, calculate_pressure_threshold);
 	} else {
@@ -7565,7 +7665,7 @@ void wakeup_kswapd(struct zone *zone, gfp_t gfp_flags, int order,
 
 	trace_mm_vmscan_wakeup_kswapd(pgdat->node_id, highest_zoneidx, order,
 				      gfp_flags);
-	wake_up_interruptible(&pgdat->kswapd_wait);
+	wakeup_kswapd_threads(pgdat);
 }
 
 void kswapd_clear_hopeless(pg_data_t *pgdat, enum kswapd_clear_hopeless_reason reason)
@@ -7655,6 +7755,7 @@ static void update_kswapd_threads_node(int nid)
 		increase = kswapd_threads - nr_threads;
 		start_idx = last_idx + 1;
 		for (hid = start_idx; hid < (start_idx + increase); hid++) {
+			atomic_inc(&pgdat->kswapd_running_threads);
 			pgdat->kswapd[hid] = kthread_run(kswapd, pgdat,
 				"kswapd%d:%d", nid, hid);
 			if (IS_ERR(pgdat->kswapd[hid])) {
@@ -7713,6 +7814,7 @@ void __meminit kswapd_run(int nid)
 					hid, nid, pgdat->kswapd[hid]);
 				pgdat->kswapd[hid] = NULL;
 			} else {
+				atomic_inc(&pgdat->kswapd_running_threads);
 				wake_up_process(pgdat->kswapd[hid]);
 			}
 		}

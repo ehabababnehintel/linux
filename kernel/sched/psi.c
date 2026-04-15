@@ -1345,6 +1345,28 @@ int psi_show(struct seq_file *m, struct psi_group *group, enum psi_res res)
 	return 0;
 }
 
+bool psi_group_cpu_under_pressure(struct psi_group *group)
+{
+	u64 now;
+	bool pressure;
+
+	if (static_branch_likely(&psi_disabled))
+		return false;
+
+	if (!group || !group->pcpu)
+		return false;
+
+	mutex_lock(&group->avgs_lock);
+	now = sched_clock();
+	collect_percpu_times(group, PSI_AVGS, NULL);
+	if (now >= group->avg_next_update)
+		group->avg_next_update = update_averages(group, now);
+	pressure = group->avg[PSI_CPU_SOME][0] > 0;
+	mutex_unlock(&group->avgs_lock);
+
+	return pressure;
+}
+
 #ifdef CONFIG_NUMA
 ssize_t psi_sysfs_show(struct psi_group *group, enum psi_res res, char *buf)
 {
