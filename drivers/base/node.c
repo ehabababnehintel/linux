@@ -664,6 +664,38 @@ static ssize_t cpu_pressure_show(struct device *dev,
 }
 static DEVICE_ATTR_RO(cpu_pressure);
 
+static ssize_t memory_pressure_show(struct device *dev,
+				    struct device_attribute *attr,
+				    char *buf)
+{
+	int node = dev->id;
+
+	if (!node_online(node))
+		return -ENODEV;
+
+	if (!psi_numa[node].pcpu)
+		return -EOPNOTSUPP;
+
+	return psi_sysfs_show(&psi_numa[node], PSI_MEM, buf);
+}
+static DEVICE_ATTR_RO(memory_pressure);
+
+static ssize_t io_pressure_show(struct device *dev,
+				struct device_attribute *attr,
+				char *buf)
+{
+	int node = dev->id;
+
+	if (!node_online(node))
+		return -ENODEV;
+
+	if (!psi_numa[node].pcpu)
+		return -EOPNOTSUPP;
+
+	return psi_sysfs_show(&psi_numa[node], PSI_IO, buf);
+}
+static DEVICE_ATTR_RO(io_pressure);
+
 
 static struct attribute *node_dev_attrs[] = {
 	&dev_attr_meminfo.attr,
@@ -671,6 +703,8 @@ static struct attribute *node_dev_attrs[] = {
 	&dev_attr_distance.attr,
 	&dev_attr_vmstat.attr,
 	&dev_attr_cpu_pressure.attr,
+	&dev_attr_memory_pressure.attr,
+	&dev_attr_io_pressure.attr,
 	NULL
 };
 

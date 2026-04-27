@@ -28,6 +28,8 @@ void psi_memstall_leave(unsigned long *flags);
 
 int psi_show(struct seq_file *s, struct psi_group *group, enum psi_res res);
 bool psi_group_cpu_under_pressure(struct psi_group *group);
+bool psi_group_mem_under_pressure(struct psi_group *group);
+bool psi_group_io_under_pressure(struct psi_group *group);
 struct psi_trigger *psi_trigger_create(struct psi_group *group, char *buf,
 				       enum psi_res res, struct file *file,
 				       struct kernfs_open_file *of);
@@ -55,6 +57,14 @@ static inline void psi_init(void) {}
 static inline void psi_memstall_enter(unsigned long *flags) {}
 static inline void psi_memstall_leave(unsigned long *flags) {}
 static inline bool psi_group_cpu_under_pressure(struct psi_group *group)
+{
+	return false;
+}
+static inline bool psi_group_mem_under_pressure(struct psi_group *group)
+{
+	return false;
+}
+static inline bool psi_group_io_under_pressure(struct psi_group *group)
 {
 	return false;
 }

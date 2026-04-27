@@ -236,3 +236,42 @@ Description:
 		This interface is equivalent to the memcg variant.
 
 		See Documentation/admin-guide/cgroup-v2.rst
+
+What:		/sys/devices/system/node/nodeX/cpu_pressure
+Date:		April 2026
+Contact:	Linux Memory Management list <linux-mm@kvack.org>
+Description:
+		CPU pressure stall information for NUMA node X.
+
+		Reports the fraction of time tasks on this node are stalled
+		waiting for CPU time (some/full), computed as PSI averages
+		over 10s, 60s, and 300s windows, and a total stall counter
+		in microseconds.  The format mirrors /proc/pressure/cpu.
+
+		Requires CONFIG_PSI and CONFIG_NUMA.
+
+What:		/sys/devices/system/node/nodeX/memory_pressure
+Date:		April 2026
+Contact:	Linux Memory Management list <linux-mm@kvack.org>
+Description:
+		Memory pressure stall information for NUMA node X.
+
+		Reports the fraction of time tasks on this node are stalled
+		waiting for memory (some/full), computed as PSI averages
+		over 10s, 60s, and 300s windows, and a total stall counter
+		in microseconds.  The format mirrors /proc/pressure/memory.
+
+		Requires CONFIG_PSI and CONFIG_NUMA.
+
+What:		/sys/devices/system/node/nodeX/io_pressure
+Date:		April 2026
+Contact:	Linux Memory Management list <linux-mm@kvack.org>
+Description:
+		I/O pressure stall information for NUMA node X.
+
+		Reports the fraction of time tasks on this node are stalled
+		waiting for I/O (some/full), computed as PSI averages
+		over 10s, 60s, and 300s windows, and a total stall counter
+		in microseconds.  The format mirrors /proc/pressure/io.
+
+		Requires CONFIG_PSI and CONFIG_NUMA.
