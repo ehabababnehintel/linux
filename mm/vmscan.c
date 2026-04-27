@@ -196,7 +196,9 @@ static inline int kswapd_psi_threads_to_wake(struct pglist_data *pgdat)
 	int nid = pgdat->node_id;
 
 	if (node_online(nid) && psi_numa[nid].pcpu &&
-	    psi_group_cpu_under_pressure(&psi_numa[nid]))
+	    (psi_group_cpu_under_pressure(&psi_numa[nid]) ||
+	     psi_group_mem_under_pressure(&psi_numa[nid]) ||
+	     psi_group_io_under_pressure(&psi_numa[nid])))
 		return 1;
 #endif
 
