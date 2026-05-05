@@ -13,6 +13,7 @@
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/mm.h>
+#include <linux/sched/cputime.h>
 #include <linux/sched/mm.h>
 #include <linux/module.h>
 #include <linux/gfp.h>
@@ -1515,10 +1516,6 @@ retry:
 		}
 
 		/*
-		 * If the folio has buffers, try to free the buffer
-		 * mappings associated with this folio. If we succeed
-		 * we try to free the folio as well.
-		 *
 		 * We do this even if the folio is dirty.
 		 * filemap_release_folio() does not perform I/O, but it
 		 * is possible for a folio to have the dirty flag set,
@@ -7205,8 +7202,10 @@ clear_reclaim_active(pg_data_t *pgdat, int highest_zoneidx)
 static int balance_pgdat(pg_data_t *pgdat, int order, int highest_zoneidx)
 {
 	int i;
+	u64 start_runtime;
 	unsigned long nr_soft_reclaimed;
 	unsigned long nr_soft_scanned;
+	unsigned long start_reclaimed;
 	unsigned long pflags;
 	unsigned long nr_boost_reclaim;
 	unsigned long zone_boosts[MAX_NR_ZONES] = { 0, };
@@ -7223,6 +7222,8 @@ static int balance_pgdat(pg_data_t *pgdat, int order, int highest_zoneidx)
 	__fs_reclaim_acquire(_THIS_IP_);
 
 	count_vm_event(PAGEOUTRUN);
+	start_runtime = task_sched_runtime(current);
+	start_reclaimed = sc.nr_reclaimed;
 
 	/*
 	 * Account for the reclaim boost. Note that the zone boost is left in
@@ -7382,6 +7383,10 @@ restart:
 	}
 
 out:
+	kswapd_reclaim_account_cpu_pages(
+		div_u64(task_sched_runtime(current) - start_runtime, NSEC_PER_USEC),
+		sc.nr_reclaimed - start_reclaimed);
+
 	clear_reclaim_active(pgdat, highest_zoneidx);
 
 	/* If reclaim was boosted, account for the reclaim done in this pass */

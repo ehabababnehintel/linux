@@ -82,6 +82,13 @@ extern void all_vm_events(unsigned long *);
 
 extern void vm_events_fold_cpu(int cpu);
 
+extern void kswapd_reclaim_account_cpu_pages(u64 cpu_us, unsigned long pages);
+
+/* Kswapd reclaim CPU cost metrics */
+extern u64 get_kswapd_reclaim_total_cpu_us(void);
+extern u64 get_kswapd_reclaim_total_pages(void);
+extern u64 get_kswapd_cpu_per_pg_cost(void);
+
 #else
 
 /* Disable counters */
@@ -102,6 +109,25 @@ static inline void all_vm_events(unsigned long *ret)
 }
 static inline void vm_events_fold_cpu(int cpu)
 {
+}
+
+static inline void kswapd_reclaim_account_cpu_pages(u64 cpu_us,
+					     unsigned long pages)
+{
+}
+
+/* Stubs for kswapd reclaim metrics when CONFIG_VM_EVENT_COUNTERS is disabled */
+static inline u64 get_kswapd_reclaim_total_cpu_us(void)
+{
+	return 0;
+}
+static inline u64 get_kswapd_reclaim_total_pages(void)
+{
+	return 0;
+}
+static inline u64 get_kswapd_cpu_per_pg_cost(void)
+{
+	return 0;
 }
 
 #endif /* CONFIG_VM_EVENT_COUNTERS */

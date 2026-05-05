@@ -110,6 +110,10 @@ out:
 DEFINE_PER_CPU(struct vm_event_state, vm_event_states) = {{0}};
 EXPORT_PER_CPU_SYMBOL(vm_event_states);
 
+/* Track kswapd reclaim CPU cost per page metrics */
+static atomic64_t kswapd_reclaim_total_cpu_us = ATOMIC64_INIT(0);
+static atomic64_t kswapd_reclaim_total_pages = ATOMIC64_INIT(0);
+
 static void sum_vm_events(unsigned long *ret)
 {
 	int cpu;
@@ -153,6 +157,40 @@ void vm_events_fold_cpu(int cpu)
 		count_vm_events(i, fold_state->event[i]);
 		fold_state->event[i] = 0;
 	}
+}
+
+void kswapd_reclaim_account_cpu_pages(u64 cpu_us, unsigned long pages)
+{
+	if (!pages)
+		return;
+
+	atomic64_add(cpu_us, &kswapd_reclaim_total_cpu_us);
+	atomic64_add(pages, &kswapd_reclaim_total_pages);
+}
+
+/*
+ * Accessor functions for kswapd reclaim CPU cost metrics
+ */
+u64 get_kswapd_reclaim_total_cpu_us(void)
+{
+	return atomic64_read(&kswapd_reclaim_total_cpu_us);
+}
+
+u64 get_kswapd_reclaim_total_pages(void)
+{
+	return atomic64_read(&kswapd_reclaim_total_pages);
+}
+
+/* Calculate average CPU time (in microseconds) per reclaimed page */
+u64 get_kswapd_cpu_per_pg_cost(void)
+{
+	u64 total_cpu_us = atomic64_read(&kswapd_reclaim_total_cpu_us);
+	u64 total_pages = atomic64_read(&kswapd_reclaim_total_pages);
+
+	if (total_pages == 0)
+		return 0;
+
+	return div_u64(total_cpu_us, total_pages);
 }
 
 #endif /* CONFIG_VM_EVENT_COUNTERS */
@@ -1336,6 +1374,8 @@ const char * const vmstat_text[] = {
 
 	[I(PGREUSE)]				= "pgreuse",
 	[I(PGSCAN_DIRECT_THROTTLE)]		= "pgscan_direct_throttle",
+	[I(DIRECT_RECLAIM_PAGES)]		= "direct_reclaim_pages",
+	[I(DIRECT_RECLAIM_CPU_US)]		= "direct_reclaim_cpu_us",
 
 #ifdef CONFIG_NUMA
 	[I(PGSCAN_ZONE_RECLAIM_SUCCESS)]	= "zone_reclaim_success",
@@ -1941,6 +1981,13 @@ static int vmstat_show(struct seq_file *m, void *arg)
 	seq_putc(m, '\n');
 
 	if (off == NR_VMSTAT_ITEMS - 1) {
+	#ifdef CONFIG_VM_EVENT_COUNTERS
+		seq_puts(m, "kswapd_cpu_per_pg_cost");
+		seq_put_decimal_ull(m, " ",
+				    get_kswapd_cpu_per_pg_cost());
+		seq_putc(m, '\n');
+	#endif
+
 		/*
 		 * We've come to the end - add any deprecated counters to avoid
 		 * breaking userspace which might depend on them being present.

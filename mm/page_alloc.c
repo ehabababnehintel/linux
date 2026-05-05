@@ -19,6 +19,7 @@
 #include <linux/highmem.h>
 #include <linux/interrupt.h>
 #include <linux/jiffies.h>
+#include <linux/ktime.h>
 #include <linux/compiler.h>
 #include <linux/kernel.h>
 #include <linux/kasan.h>
@@ -43,6 +44,9 @@
 #include <linux/mm_inline.h>
 #include <linux/mmu_notifier.h>
 #include <linux/migrate.h>
+#include <linux/cgroup.h>
+#include <linux/overflow.h>
+#include <linux/sched/cputime.h>
 #include <linux/sched/mm.h>
 #include <linux/page_owner.h>
 #include <linux/page_table_check.h>
@@ -209,6 +213,28 @@ static void __free_pages_ok(struct page *page, unsigned int order,
 			    fpi_t fpi_flags);
 static void reserve_highatomic_pageblock(struct page *page, int order,
 					 struct zone *zone);
+
+static __always_inline void alloc_pages_charge_cpu_cost(unsigned long pages)
+{
+	u64 avg_cpu_per_page_us;
+	u64 total_cpu_us;
+	u64 total_cpu_ns;
+
+	if (!pages || !in_task())
+		return;
+
+	avg_cpu_per_page_us = get_kswapd_cpu_per_pg_cost();
+	if (!avg_cpu_per_page_us)
+		return;
+
+	if (check_mul_overflow(avg_cpu_per_page_us, (u64)pages, &total_cpu_us))
+		total_cpu_us = U64_MAX;
+
+	if (check_mul_overflow(total_cpu_us, (u64)NSEC_PER_USEC, &total_cpu_ns))
+		total_cpu_ns = U64_MAX;
+
+	cgroup_account_cputime(current, total_cpu_ns);
+}
 
 /*
  * results with 256, 32 in the lowmem_reserve sysctl:
@@ -4418,8 +4444,10 @@ __alloc_pages_direct_reclaim(gfp_t gfp_mask, unsigned int order,
 {
 	struct page *page = NULL;
 	unsigned long pflags;
+	u64 start_runtime;
 	bool drained = false;
 
+	start_runtime = task_sched_runtime(current);
 	psi_memstall_enter(&pflags);
 	*did_some_progress = __perform_reclaim(gfp_mask, order, ac);
 	if (unlikely(!(*did_some_progress)))
@@ -4440,6 +4468,17 @@ retry:
 		goto retry;
 	}
 out:
+	{
+		u64 delta_us = div_u64(task_sched_runtime(current) - start_runtime,
+				      NSEC_PER_USEC);
+		unsigned long reclaimed = *did_some_progress;
+
+		count_vm_events(DIRECT_RECLAIM_PAGES,
+				(long)min_t(unsigned long, reclaimed,
+					    (unsigned long)LONG_MAX));
+		count_vm_events(DIRECT_RECLAIM_CPU_US,
+				(long)min_t(u64, delta_us, LONG_MAX));
+	}
 	psi_memstall_leave(&pflags);
 
 	return page;
@@ -5173,6 +5212,7 @@ retry_this_zone:
 
 	__count_zid_vm_events(PGALLOC, zone_idx(zone), nr_account);
 	zone_statistics(zonelist_zone(ac.preferred_zoneref), zone, nr_account);
+	alloc_pages_charge_cpu_cost(nr_account);
 
 out:
 	return nr_populated;
@@ -5245,6 +5285,8 @@ out:
 		free_frozen_pages(page, order);
 		page = NULL;
 	}
+	if (page)
+		alloc_pages_charge_cpu_cost(1UL << order);
 
 	trace_mm_page_alloc(page, order, alloc_gfp, ac.migratetype);
 	kmsan_alloc_page(page, order, alloc_gfp);
@@ -7793,6 +7835,8 @@ struct page *alloc_frozen_pages_nolock_noprof(gfp_t gfp_flags, int nid, unsigned
 		__free_frozen_pages(page, order, FPI_TRYLOCK);
 		page = NULL;
 	}
+	if (page)
+		alloc_pages_charge_cpu_cost(1UL << order);
 	trace_mm_page_alloc(page, order, alloc_gfp, ac.migratetype);
 	kmsan_alloc_page(page, order, alloc_gfp);
 	return page;
