@@ -1531,6 +1531,7 @@ typedef struct pglist_data {
 	enum zone_type kswapd_highest_zoneidx;
 
 	atomic_t kswapd_failures;	/* Number of 'reclaimed == 0' runs */
+	atomic_t kswapd_running_threads;        /* Number of awake kswapd threads */
 
 #ifdef CONFIG_COMPACTION
 	int kcompactd_max_order;

@@ -1388,6 +1388,28 @@ ssize_t psi_sysfs_show(struct psi_group *group, enum psi_res res, char *buf)
 EXPORT_SYMBOL_GPL(psi_sysfs_show);
 #endif
 
+bool psi_group_cpu_under_pressure(struct psi_group *group)
+{
+	u64 now;
+	bool pressure;
+
+	if (static_branch_likely(&psi_disabled))
+		return false;
+
+	if (!group || !group->pcpu)
+		return false;
+
+	mutex_lock(&group->avgs_lock);
+	now = sched_clock();
+	collect_percpu_times(group, PSI_AVGS, NULL);
+	if (now >= group->avg_next_update)
+		group->avg_next_update = update_averages(group, now);
+	pressure = group->avg[PSI_CPU_SOME][0] > 0;
+	mutex_unlock(&group->avgs_lock);
+
+	return pressure;
+}
+
 struct psi_trigger *psi_trigger_create(struct psi_group *group, char *buf,
 				       enum psi_res res, struct file *file,
 				       struct kernfs_open_file *of)
